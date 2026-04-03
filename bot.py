@@ -518,22 +518,15 @@ async def save_evening(message: Message, state: FSMContext):
 # ISHGA TUSHIRISH
 # ──────────────────────────────────────────
 
-async def main():
-    setup_scheduler(bot)
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    asyncio.run(main())
-
 from aiohttp import web
 
 async def health(request):
-    return web.Response(text="OK")
+    return web.Response(text="Bot ishlayapti!")
 
 async def main():
     setup_scheduler(bot)
-    
-    # Web server (Render uchun)
+
+    # Render uchun web server
     app = web.Application()
     app.router.add_get("/", health)
     runner = web.AppRunner(app)
@@ -541,5 +534,9 @@ async def main():
     port = int(os.getenv("PORT", 8080))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    
+
+    # Bot polling
     await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
