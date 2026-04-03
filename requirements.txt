@@ -2,4 +2,4 @@ aiogram==3.4.1
 supabase==2.3.0
 apscheduler==3.10.4
 python-dotenv==1.0.0
-aiohttp
+aiohttp==3.9.3
