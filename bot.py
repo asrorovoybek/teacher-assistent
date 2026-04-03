@@ -166,7 +166,7 @@ async def cmd_start(message: Message, state: FSMContext):
         )
     else:
         await message.answer(
-            "👋 *Jadval va Vazifa Yordamchi Botga xush kelibsiz!*\n\n"
+            "👋 *HelpTeach botiga xush kelibsiz!*\n\n"
             "Bu bot sizga:\n"
             "📅 Dars/ish jadvalingizni boshqarishga\n"
             "✅ Kunlik vazifalarni rejalashtirishga\n"
@@ -180,7 +180,7 @@ async def cmd_start(message: Message, state: FSMContext):
 async def reg_name(message: Message, state: FSMContext):
     await state.update_data(full_name=message.text)
     await message.answer(
-        "👤 Siz kimسیز? Rolingizni tanlang:",
+        "👤 Siz kim? Rolingizni tanlang:",
         reply_markup=role_keyboard()
     )
     await state.set_state(RegisterState.role_type)
