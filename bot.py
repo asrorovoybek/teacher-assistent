@@ -628,7 +628,12 @@ async def reminder_date(message: Message, state: FSMContext):
 
 @dp.message(ReminderState.time)
 async def reminder_time(message: Message, state: FSMContext):
-    await state.update_data(time=message.text)
+    # Vaqtni tekshirish
+    time_input = message.text.strip()
+    if "T" in time_input or "-" in time_input:
+        await message.answer("❌ Faqat vaqtni kiriting! Masalan: 14:30")
+        return
+    await state.update_data(time=time_input)
     await message.answer("🔂 Takrorlanishini tanlang:", reply_markup=repeat_keyboard())
     await state.set_state(ReminderState.repeat)
 
@@ -636,14 +641,25 @@ async def reminder_time(message: Message, state: FSMContext):
 async def reminder_repeat(call: CallbackQuery, state: FSMContext):
     repeat = call.data.replace("repeat_", "")
     data = await state.get_data()
-    remind_at = f"{data['date']}T{data['time']}:00+05:00"
+    
+    try:
+        # Sana: YYYY-MM-DD, Vaqt: HH:MM formatini tekshirish
+        date_str = data['date'].strip()   # masalan: 2026-04-04
+        time_str = data['time'].strip()   # masalan: 14:30
+        remind_at = f"{date_str}T{time_str}:00+05:00"
+    except Exception:
+        await call.message.answer("❌ Sana yoki vaqt formati noto'g'ri!\nQaytadan /start dan boshlang.")
+        await state.clear()
+        await call.answer()
+        return
+
     add_reminder(call.from_user.id, data["title"], remind_at, repeat)
     await state.clear()
     repeat_text = {"none": "Bir marta", "daily": "Har kuni", "weekly": "Har hafta"}
     await call.message.answer(
         f"✅ *Eslatma qo'shildi!*\n\n"
         f"📌 {data['title']}\n"
-        f"📅 {data['date']} ⏰ {data['time']}\n"
+        f"📅 {date_str} ⏰ {time_str}\n"
         f"🔂 {repeat_text.get(repeat, repeat)}",
         reply_markup=main_menu(call.from_user.id),
         parse_mode="Markdown"
