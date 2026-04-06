@@ -14,10 +14,11 @@ def get_user(telegram_id: int):
     res = supabase.table("users").select("*").eq("telegram_id", telegram_id).execute()
     return res.data[0] if res.data else None
 
-def create_user(telegram_id: int, full_name: str):
+def create_user(telegram_id: int, full_name: str, username: str = None):
     supabase.table("users").insert({
         "telegram_id": telegram_id,
         "full_name": full_name,
+        "username": username,
         "role": "user",
         "is_admin": False
     }).execute()
