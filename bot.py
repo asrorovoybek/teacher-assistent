@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 from datetime import datetime, timedelta
 
 from aiogram import Bot, Dispatcher, F
@@ -77,6 +78,58 @@ class SettingsState(StatesGroup):
 class AdminState(StatesGroup):
     broadcast_text = State()
     set_admin_id = State()
+
+# ──────────────────────────────────────────
+# YORDAMCHI FUNKSIYALAR
+# ──────────────────────────────────────────
+
+def normalize_full_name(text: str) -> str:
+    return " ".join((text or "").strip().split())
+
+def is_valid_full_name(text: str) -> bool:
+    if not text:
+        return False
+
+    text = normalize_full_name(text)
+
+    # Juda qisqa yoki juda uzun bo'lmasin
+    if len(text) < 5 or len(text) > 60:
+        return False
+
+    # Kamida 2 ta so'z bo'lsin: Ism Familiya
+    parts = text.split()
+    if len(parts) < 2:
+        return False
+
+    # Har bir qism kamida 2 belgidan iborat bo'lsin
+    for part in parts:
+        if len(part) < 2:
+            return False
+
+    # Faqat harflar, bo'sh joy, defis, apostrof
+    if not re.fullmatch(r"[A-Za-zÀ-ÿА-Яа-яҒғҚқҲҳЎўЁёʼ'`\-\s]+", text):
+        return False
+
+    # Shubhali test yozuvlarni rad qilish
+    lowered = text.lower()
+    banned_words = {
+        "test", "asd", "qwerty", "admin", "user",
+        "nickname", "nik", "name", "familiya", "ism"
+    }
+
+    if lowered in banned_words:
+        return False
+
+    # Raqamga o'xshash yoki juda sun'iy yozuvlarni kamaytirish
+    if any(ch.isdigit() for ch in text):
+        return False
+
+    return True
+
+def get_display_username(username: str | None) -> str:
+    if username:
+        return f"@{username}"
+    return "—"
 
 # ──────────────────────────────────────────
 # KLAVIATURALAR
@@ -158,7 +211,13 @@ def admin_menu():
 @dp.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
     user = get_user(message.from_user.id)
+
     if user:
+        # Mavjud foydalanuvchining username qiymatini yangilab qo'yamiz
+        update_user(message.from_user.id, {
+            "username": message.from_user.username
+        })
+
         await message.answer(
             f"👋 Xush kelibsiz, *{user['full_name']}*!\n\nNimadan boshlaymiz?",
             reply_markup=main_menu(message.from_user.id),
@@ -171,14 +230,28 @@ async def cmd_start(message: Message, state: FSMContext):
             "📅 Dars/ish jadvalingizni boshqarishga\n"
             "✅ Kunlik vazifalarni rejalashtirishga\n"
             "🔔 Muhim eslatmalar olishga yordam beradi!\n\n"
-            "Boshlash uchun *to'liq ismingizni* kiriting:",
+            "Boshlash uchun *ism va familiyangizni to'liq kiriting*.\n"
+            "Namuna: *Oybek Asrorov*\n\n"
+            "❗ Iltimos, tasodifiy matn, qisqartma, raqam yoki noto'g'ri ism kiritmang.",
             parse_mode="Markdown"
         )
         await state.set_state(RegisterState.full_name)
 
 @dp.message(RegisterState.full_name)
 async def reg_name(message: Message, state: FSMContext):
-    await state.update_data(full_name=message.text)
+    full_name = normalize_full_name(message.text)
+
+    if not is_valid_full_name(full_name):
+        await message.answer(
+            "❌ Ism-familiya noto'g'ri formatda kiritildi.\n\n"
+            "Iltimos, *ism va familiyangizni to'liq va to'g'ri kiriting*.\n"
+            "Namuna: *Oybek Asrorov*\n\n"
+            "Tasodifiy matn, bitta so'z, raqam yoki qisqa yozuv qabul qilinmaydi.",
+            parse_mode="Markdown"
+        )
+        return
+
+    await state.update_data(full_name=full_name)
     await message.answer(
         "👤 Siz kim? Rolingizni tanlang:",
         reply_markup=role_keyboard()
@@ -208,10 +281,13 @@ async def reg_role(call: CallbackQuery, state: FSMContext):
 @dp.message(RegisterState.organization)
 async def reg_organization(message: Message, state: FSMContext):
     data = await state.get_data()
+    organization = normalize_full_name(message.text) if message.text else message.text
+
     create_user(message.from_user.id, data["full_name"])
     update_user(message.from_user.id, {
         "role": data["role"],
-        "organization": message.text
+        "organization": organization,
+        "username": message.from_user.username
     })
     await state.clear()
 
@@ -221,7 +297,8 @@ async def reg_organization(message: Message, state: FSMContext):
         f"✅ *Ro'yxatdan o'tdingiz!*\n\n"
         f"👤 Ism: *{data['full_name']}*\n"
         f"{role_emoji} Rol: *{data['role']}*\n"
-        f"🏛 Tashkilot: *{message.text}*\n\n"
+        f"🏛 Tashkilot: *{organization}*\n"
+        f"🔗 Username: *{get_display_username(message.from_user.username)}*\n\n"
         f"Endi /help buyrug'i orqali bot imkoniyatlarini ko'ring yoki pastdagi menyu orqali boshlang!",
         reply_markup=main_menu(message.from_user.id),
         parse_mode="Markdown"
@@ -322,12 +399,18 @@ async def show_profile(message: Message):
         await message.answer("Avval ro'yxatdan o'ting: /start")
         return
 
+    # Username ni yangilab qo'yamiz
+    update_user(message.from_user.id, {
+        "username": message.from_user.username
+    })
+
     role_emoji = {"teacher": "👨‍🏫 O'qituvchi", "student": "🎓 Talaba", "other": "💼 Xodim/Boshqa"}.get(user.get("role", ""), "👤")
     admin_badge = " 🔐 Admin" if is_admin(message.from_user.id) else ""
 
     await message.answer(
         f"👤 *Profilingiz*{admin_badge}\n\n"
         f"Ism: *{user['full_name']}*\n"
+        f"Username: *{get_display_username(message.from_user.username)}*\n"
         f"Rol: {role_emoji}\n"
         f"🏛 Tashkilot: {user.get('organization', user.get('faculty', '—'))}\n"
         f"📅 Ro'yxatdan o'tgan: {str(user['created_at'])[:10]}",
@@ -641,11 +724,11 @@ async def reminder_time(message: Message, state: FSMContext):
 async def reminder_repeat(call: CallbackQuery, state: FSMContext):
     repeat = call.data.replace("repeat_", "")
     data = await state.get_data()
-    
+
     try:
         # Sana: YYYY-MM-DD, Vaqt: HH:MM formatini tekshirish
-        date_str = data['date'].strip()   # masalan: 2026-04-04
-        time_str = data['time'].strip()   # masalan: 14:30
+        date_str = data['date'].strip()
+        time_str = data['time'].strip()
         remind_at = f"{date_str}T{time_str}:00+05:00"
     except Exception:
         await call.message.answer("❌ Sana yoki vaqt formati noto'g'ri!\nQaytadan /start dan boshlang.")
@@ -794,8 +877,11 @@ async def admin_users(call: CallbackQuery):
     for u in users[:30]:  # max 30 ta ko'rsatamiz
         role_e = {"teacher": "👨‍🏫", "student": "🎓", "other": "💼"}.get(u.get("role", ""), "👤")
         admin_b = " 🔐" if u.get("is_admin") else ""
+        username = get_display_username(u.get("username"))
+
         msg += f"{role_e} *{u['full_name']}*{admin_b}\n"
         msg += f"   ID: `{u['telegram_id']}`\n"
+        msg += f"   Username: {username}\n"
         msg += f"   {u.get('organization', u.get('faculty', '—'))}\n\n"
 
     await call.message.answer(msg, parse_mode="Markdown")
