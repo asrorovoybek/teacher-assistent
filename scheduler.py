@@ -14,20 +14,33 @@ logger = logging.getLogger(__name__)
 # ──────────────────────────────────────────
 
 async def check_upcoming_lessons(bot):
-    """Har daqiqa — BITTA so'rov bilan barcha foydalanuvchilar"""
     try:
-        now = datetime.now()
+        # UTC+5 Toshkent vaqti
+        now = datetime.now(timezone(timedelta(hours=5)))
         current_day = now.weekday()
         current_time = now.strftime("%H:%M")
         time_30 = (now + timedelta(minutes=30)).strftime("%H:%M")
         time_10 = (now + timedelta(minutes=10)).strftime("%H:%M")
 
-        # Barcha sozlamalarni BITTA so'rovda
+        # Hozirgi hafta toqmi yoki juftmi
+        from datetime import date
+        week_number = date.today().isocalendar()[1]
+        is_odd_week = (week_number % 2 == 1)
+
         all_settings = supabase.table("user_settings").select("*").execute().data
         settings_map = {s["user_id"]: s for s in all_settings}
 
-        # Bugungi barcha darslarni BITTA so'rovda
         all_lessons = supabase.table("schedule").select("*").eq("day_of_week", current_day).execute().data
+
+        # Dars turi matnlari
+        LESSON_TYPES = {
+            "lecture": "📖 Ma'ruza",
+            "practical": "✏️ Amaliy",
+            "lab": "🔬 Laboratoriya",
+            "course": "📝 Kurs ishi",
+            "seminar": "💬 Seminar",
+            "other": "📌 Boshqa"
+        }
 
         for lesson in all_lessons:
             uid = lesson["user_id"]
@@ -35,44 +48,48 @@ async def check_upcoming_lessons(bot):
             if not settings or settings.get("do_not_disturb"):
                 continue
 
+            # Toq/juft hafta filtri
+            wt = lesson.get("week_type", "every")
+            if wt == "odd" and not is_odd_week:
+                continue
+            if wt == "even" and is_odd_week:
+                continue
+
             lesson_start = lesson["start_time"][:5]
+            lt = LESSON_TYPES.get(lesson.get("lesson_type", "other"), "📌 Boshqa")
 
             if settings.get("notify_before_30") and lesson_start == time_30:
-                await bot.send_message(
-                    uid,
+                await bot.send_message(uid,
                     f"📅 *30 daqiqadan dars boshlanadi!*\n\n"
                     f"📚 Fan: *{lesson['subject']}*\n"
+                    f"📖 Turi: *{lt}*\n"
                     f"🏛 Xona: *{lesson['room']}*\n"
                     f"👥 Guruh: *{lesson['group_name']}*\n"
-                    f"⏰ Vaqt: *{lesson['start_time'][:5]} - {lesson['end_time'][:5]}*\n\n"
+                    f"⏰ Vaqt: *{lesson['start_time'][:5]} – {lesson['end_time'][:5]}*\n\n"
                     f"Tayyorlaning! 💪",
-                    parse_mode="Markdown"
-                )
+                    parse_mode="Markdown")
 
             if settings.get("notify_before_10") and lesson_start == time_10:
-                await bot.send_message(
-                    uid,
+                await bot.send_message(uid,
                     f"⚡️ *10 daqiqa qoldi!*\n\n"
                     f"📚 Fan: *{lesson['subject']}*\n"
+                    f"📖 Turi: *{lt}*\n"
                     f"🏛 Xona: *{lesson['room']}*\n"
                     f"👥 Guruh: *{lesson['group_name']}*\n\n"
                     f"Tez yo'lga chiqing! 🏃",
-                    parse_mode="Markdown"
-                )
+                    parse_mode="Markdown")
 
             if settings.get("notify_on_time") and lesson_start == current_time:
-                await bot.send_message(
-                    uid,
+                await bot.send_message(uid,
                     f"🔴 *DARS BOSHLANDI!*\n\n"
                     f"📚 *{lesson['subject']}*\n"
+                    f"📖 Turi: *{lt}*\n"
                     f"🏛 Xona: *{lesson['room']}*\n"
                     f"👥 Guruh: *{lesson['group_name']}*",
-                    parse_mode="Markdown"
-                )
+                    parse_mode="Markdown")
 
     except Exception as e:
         logger.error(f"check_upcoming_lessons xatosi: {e}")
-
 
 # ──────────────────────────────────────────
 # ERTALABKI XABAR
