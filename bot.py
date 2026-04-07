@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import re
+from html import escape as html_escape
 from datetime import datetime, timedelta
 
 from aiogram import Bot, Dispatcher, F
@@ -16,6 +17,7 @@ from aiogram.types import (
     BotCommand
 )
 from aiohttp import web
+from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, TelegramRetryAfter, TelegramAPIError
 
 from database import (
     get_user, create_user, update_user,
@@ -26,6 +28,16 @@ from database import (
     get_settings, update_settings,
     is_admin, get_all_users, set_admin, get_stats
 )
+
+try:
+    from database import delete_user as db_delete_user
+except Exception:
+    db_delete_user = None
+
+try:
+    from database import delete_user_by_telegram_id as db_delete_user_by_telegram_id
+except Exception:
+    db_delete_user_by_telegram_id = None
 from scheduler import setup_scheduler
 from weather import (
     UZ_CITIES, fetch_weather, geocode_city,
@@ -138,6 +150,46 @@ def get_display_username(username: str | None) -> str:
         return f"@{username}"
     return "—"
 
+
+def h(text) -> str:
+    return html_escape(str(text if text is not None else ""))
+
+def safe_username(username: str | None) -> str:
+    return f"@{username}" if username else "—"
+
+async def answer_long_html(message_obj, text: str, reply_markup=None):
+    limit = 3900
+    chunks = [text[i:i+limit] for i in range(0, len(text), limit)] or [text]
+    for i, chunk in enumerate(chunks):
+        await message_obj.answer(
+            chunk,
+            parse_mode="HTML",
+            reply_markup=reply_markup if i == len(chunks) - 1 else None
+        )
+
+def try_delete_blocked_user(telegram_id: int) -> bool:
+    try:
+        if db_delete_user_by_telegram_id:
+            db_delete_user_by_telegram_id(telegram_id)
+            return True
+        if db_delete_user:
+            db_delete_user(telegram_id)
+            return True
+    except Exception as e:
+        logger.exception("Blocked userni o'chirishda xatolik: %s", e)
+    return False
+
+def should_remove_blocked_user(error: Exception) -> bool:
+    text = str(error).lower()
+    blocked_patterns = [
+        "bot was blocked by the user",
+        "forbidden: bot was blocked by the user",
+        "user is deactivated",
+        "chat not found",
+    ]
+    return any(p in text for p in blocked_patterns)
+
+
 # ──────────────────────────────────────────
 # KLAVIATURALAR
 # ──────────────────────────────────────────
@@ -227,9 +279,9 @@ async def cmd_start(message: Message, state: FSMContext):
         })
 
         await message.answer(
-            f"👋 Xush kelibsiz, *{user['full_name']}*!\n\nNimadan boshlaymiz?",
+            f"👋 Xush kelibsiz, <b>{h(user['full_name'])}</b>!\n\nNimadan boshlaymiz?",
             reply_markup=main_menu(message.from_user.id),
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
     else:
         await message.answer(
@@ -302,14 +354,14 @@ async def reg_organization(message: Message, state: FSMContext):
     role_emoji = {"teacher": "👨‍🏫", "student": "🎓", "other": "💼"}.get(data["role"], "👤")
 
     await message.answer(
-        f"✅ *Ro'yxatdan o'tdingiz!*\n\n"
-        f"👤 Ism: *{data['full_name']}*\n"
-        f"{role_emoji} Rol: *{data['role']}*\n"
-        f"🏛 Tashkilot: *{organization}*\n"
-        f"🔗 Username: *{get_display_username(message.from_user.username)}*\n\n"
+        f"✅ <b>Ro'yxatdan o'tdingiz!</b>\n\n"
+        f"👤 Ism: <b>{h(data['full_name'])}</b>\n"
+        f"{role_emoji} Rol: <b>{h(data['role'])}</b>\n"
+        f"🏛 Tashkilot: <b>{h(organization)}</b>\n"
+        f"🔗 Username: <b>{h(get_display_username(message.from_user.username))}</b>\n\n"
         f"Endi /help buyrug'i orqali bot imkoniyatlarini ko'ring yoki pastdagi menyu orqali boshlang!",
         reply_markup=main_menu(message.from_user.id),
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
 
 # ──────────────────────────────────────────
@@ -416,13 +468,13 @@ async def show_profile(message: Message):
     admin_badge = " 🔐 Admin" if is_admin(message.from_user.id) else ""
 
     await message.answer(
-        f"👤 *Profilingiz*{admin_badge}\n\n"
-        f"Ism: *{user['full_name']}*\n"
-        f"Username: *{get_display_username(message.from_user.username)}*\n"
-        f"Rol: {role_emoji}\n"
-        f"🏛 Tashkilot: {user.get('organization', user.get('faculty', '—'))}\n"
-        f"📅 Ro'yxatdan o'tgan: {str(user['created_at'])[:10]}",
-        parse_mode="Markdown"
+        f"👤 <b>Profilingiz</b>{admin_badge}\n\n"
+        f"Ism: <b>{h(user['full_name'])}</b>\n"
+        f"Username: <b>{h(get_display_username(message.from_user.username))}</b>\n"
+        f"Rol: {h(role_emoji)}\n"
+        f"🏛 Tashkilot: {h(user.get('organization', user.get('faculty', '—')))}\n"
+        f"📅 Ro'yxatdan o'tgan: {h(str(user['created_at'])[:10])}",
+        parse_mode="HTML"
     )
 
 # ──────────────────────────────────────────
@@ -440,18 +492,18 @@ async def send_today_lessons(message, lessons):
     week_type_str = "Toq hafta 1️⃣" if week_number % 2 == 1 else "Juft hafta 2️⃣"
 
     if not lessons:
-        await message.answer(f"📭 Bugun dars yo'q!\n_{week_type_str}_", parse_mode="Markdown")
+        await message.answer(f"📭 Bugun dars yo'q!\n<i>{h(week_type_str)}</i>", parse_mode="HTML")
         return
 
-    msg = f"📅 *Bugungi darslar*\n_{week_type_str}_\n\n"
+    msg = f"📅 <b>Bugungi darslar</b>\n<i>{h(week_type_str)}</i>\n\n"
     for l in lessons:
         lt = LESSON_TYPES.get(l.get("lesson_type", "other"), "📌 Boshqa")
         msg += (
-            f"⏰ *{l['start_time'][:5]} – {l['end_time'][:5]}*\n"
-            f"📚 {l['subject']} | {lt}\n"
-            f"🏛 Xona: {l['room']} | 👥 {l['group_name']}\n\n"
+            f"⏰ <b>{h(l['start_time'][:5])} – {h(l['end_time'][:5])}</b>\n"
+            f"📚 {h(l['subject'])} | {h(lt)}\n"
+            f"🏛 Xona: {h(l['room'])} | 👥 {h(l['group_name'])}\n\n"
         )
-    await message.answer(msg, parse_mode="Markdown")
+    await message.answer(msg, parse_mode="HTML")
 
 # ──────────────────────────────────────────
 # DARS JADVALI
@@ -535,13 +587,13 @@ async def lesson_end(message: Message, state: FSMContext):
     wt = WEEK_TYPES.get(data.get("week_type", "every"), "🔄 Har hafta")
 
     await message.answer(
-        f"✅ *Dars qo'shildi!*\n\n"
-        f"📚 {data['subject']} | {lt}\n"
-        f"📅 {DAYS[data['day']]} | {wt}\n"
-        f"⏰ {data['start_time']} – {message.text}\n"
-        f"🏛 Xona: {data['room']} | 👥 {data['group_name']}",
+        f"✅ <b>Dars qo'shildi!</b>\n\n"
+        f"📚 {h(data['subject'])} | {h(lt)}\n"
+        f"📅 {h(DAYS[data['day']])} | {h(wt)}\n"
+        f"⏰ {h(data['start_time'])} – {h(message.text)}\n"
+        f"🏛 Xona: {h(data['room'])} | 👥 {h(data['group_name'])}",
         reply_markup=main_menu(message.from_user.id),
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
 
 @dp.callback_query(F.data == "today_lessons")
@@ -644,9 +696,9 @@ async def task_due_date(message: Message, state: FSMContext):
     add_task(message.from_user.id, data["title"], data.get("description"), due)
     await state.clear()
     await message.answer(
-        f"✅ *Vazifa qo'shildi!*\n📝 {data['title']}",
+        f"✅ <b>Vazifa qo'shildi!</b>\n📝 {h(data['title'])}",
         reply_markup=main_menu(message.from_user.id),
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
 
 @dp.callback_query(F.data == "list_tasks")
@@ -658,8 +710,8 @@ async def list_tasks(call: CallbackQuery):
         return
 
     for task in tasks:
-        due = f"\n📅 Muddat: {task['due_date']}" if task.get('due_date') else ""
-        desc = f"\n📄 {task['description']}" if task.get('description') else ""
+        due = f"\n📅 Muddat: {h(task['due_date'])}" if task.get('due_date') else ""
+        desc = f"\n📄 {h(task['description'])}" if task.get('description') else ""
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [
                 InlineKeyboardButton(text="✅ Bajarildi", callback_data=f"done_task_{task['id']}"),
@@ -667,9 +719,9 @@ async def list_tasks(call: CallbackQuery):
             ]
         ])
         await call.message.answer(
-            f"📝 *{task['title']}*{desc}{due}",
+            f"📝 <b>{h(task['title'])}</b>{desc}{due}",
             reply_markup=kb,
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
     await call.answer()
 
@@ -748,12 +800,12 @@ async def reminder_repeat(call: CallbackQuery, state: FSMContext):
     await state.clear()
     repeat_text = {"none": "Bir marta", "daily": "Har kuni", "weekly": "Har hafta"}
     await call.message.answer(
-        f"✅ *Eslatma qo'shildi!*\n\n"
-        f"📌 {data['title']}\n"
-        f"📅 {date_str} ⏰ {time_str}\n"
-        f"🔂 {repeat_text.get(repeat, repeat)}",
+        f"✅ <b>Eslatma qo'shildi!</b>\n\n"
+        f"📌 {h(data['title'])}\n"
+        f"📅 {h(date_str)} ⏰ {h(time_str)}\n"
+        f"🔂 {h(repeat_text.get(repeat, repeat))}",
         reply_markup=main_menu(call.from_user.id),
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
     await call.answer()
 
@@ -764,12 +816,12 @@ async def list_reminders(call: CallbackQuery):
         await call.message.answer("📭 Faol eslatmalar yo'q!")
         await call.answer()
         return
-    msg = "🔔 *Faol eslatmalar:*\n\n"
+    msg = "🔔 <b>Faol eslatmalar:</b>\n\n"
     for r in reminders:
         time_str = str(r["remind_at"])[:16].replace("T", " ")
         repeat_text = {"none": "Bir marta", "daily": "Har kuni", "weekly": "Har hafta"}
-        msg += f"📌 *{r['title']}*\n"
-        msg += f"⏰ {time_str} | 🔂 {repeat_text.get(r['repeat_type'], r['repeat_type'])}\n\n"
+        msg += f"📌 <b>{h(r['title'])}</b>\n"
+        msg += f"⏰ {h(time_str)} | 🔂 {h(repeat_text.get(r['repeat_type'], r['repeat_type']))}\n\n"
     await call.message.answer(msg, parse_mode="HTML")
     await call.answer()
 
@@ -920,15 +972,15 @@ async def settings_main(message: Message):
         [InlineKeyboardButton(text=f"🔕 Bezovta qilma: {dnd}", callback_data="toggle_dnd")],
     ])
     await message.answer(
-        f"⚙️ *Sozlamalar*\n\n"
-        f"🌅 Ertalabki xabar: *{str(settings.get('morning_time', '07:00'))[:5]}*\n"
-        f"🌙 Kechki xulosa: *{str(settings.get('evening_time', '21:00'))[:5]}*\n"
-        f"🔕 Bezovta qilma: *{dnd}*\n\n"
+        f"⚙️ <b>Sozlamalar</b>\n\n"
+        f"🌅 Ertalabki xabar: <b>{h(str(settings.get('morning_time', '07:00'))[:5])}</b>\n"
+        f"🌙 Kechki xulosa: <b>{h(str(settings.get('evening_time', '21:00'))[:5])}</b>\n"
+        f"🔕 Bezovta qilma: <b>{h(dnd)}</b>\n\n"
         f"30 daqiqa oldin: {'✅' if settings.get('notify_before_30') else '❌'}\n"
         f"10 daqiqa oldin: {'✅' if settings.get('notify_before_10') else '❌'}\n"
         f"Dars boshida: {'✅' if settings.get('notify_on_time') else '❌'}",
         reply_markup=kb,
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
 
 @dp.callback_query(F.data == "toggle_dnd")
@@ -950,7 +1002,7 @@ async def set_morning(call: CallbackQuery, state: FSMContext):
 async def save_morning(message: Message, state: FSMContext):
     update_settings(message.from_user.id, {"morning_time": message.text})
     await state.clear()
-    await message.answer(f"✅ Ertalabki vaqt *{message.text}* ga o'zgartirildi!", parse_mode="Markdown")
+    await message.answer(f"✅ Ertalabki vaqt <b>{h(message.text)}</b> ga o'zgartirildi!", parse_mode="HTML")
 
 @dp.callback_query(F.data == "set_evening")
 async def set_evening(call: CallbackQuery, state: FSMContext):
@@ -962,7 +1014,7 @@ async def set_evening(call: CallbackQuery, state: FSMContext):
 async def save_evening(message: Message, state: FSMContext):
     update_settings(message.from_user.id, {"evening_time": message.text})
     await state.clear()
-    await message.answer(f"✅ Kechki vaqt *{message.text}* ga o'zgartirildi!", parse_mode="Markdown")
+    await message.answer(f"✅ Kechki vaqt <b>{h(message.text)}</b> ga o'zgartirildi!", parse_mode="HTML")
 
 # ──────────────────────────────────────────
 # ADMIN PANEL
@@ -1005,26 +1057,29 @@ async def admin_users(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔️ Ruxsat yo'q!")
         return
+
     users = get_all_users()
     if not users:
         await call.message.answer("Foydalanuvchilar yo'q!")
         await call.answer()
         return
 
-    msg = f"👥 *Foydalanuvchilar ({len(users)} ta):*\n\n"
-    for u in users[:30]:  # max 30 ta ko'rsatamiz
+    lines = [f"👥 <b>Foydalanuvchilar ({len(users)} ta):</b>\n"]
+    for u in users[:100]:
         role_e = {"teacher": "👨‍🏫", "student": "🎓", "other": "💼"}.get(u.get("role", ""), "👤")
         admin_b = " 🔐" if u.get("is_admin") else ""
-        username = get_display_username(u.get("username"))
+        username = safe_username(u.get("username"))
+        org = u.get("organization", u.get("faculty", "—"))
 
-        msg += f"{role_e} *{u['full_name']}*{admin_b}\n"
-        msg += f"   ID: `{u['telegram_id']}`\n"
-        msg += f"   Username: {username}\n"
-        msg += f"   {u.get('organization', u.get('faculty', '—'))}\n\n"
+        lines.append(
+            f"{role_e} <b>{h(u['full_name'])}</b>{admin_b}\n"
+            f"   ID: <code>{h(u['telegram_id'])}</code>\n"
+            f"   Username: {h(username)}\n"
+            f"   {h(org)}\n"
+        )
 
-    await call.message.answer(msg, parse_mode="HTML")
+    await answer_long_html(call.message, "\n".join(lines))
     await call.answer()
-
 @dp.callback_query(F.data == "admin_broadcast")
 async def admin_broadcast_start(call: CallbackQuery, state: FSMContext):
     if not is_admin(call.from_user.id):
@@ -1047,28 +1102,65 @@ async def cancel_broadcast(message: Message, state: FSMContext):
 async def admin_broadcast_send(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         return
+
     await state.clear()
     users = get_all_users()
     success = 0
     fail = 0
+    removed_blocked = 0
+    failed_users = []
+
+    broadcast_text = message.text or ""
+    formatted_text = f"📢 <b>Admin xabari:</b>\n\n{h(broadcast_text)}"
+
     for u in users:
+        tg_id = u["telegram_id"]
         try:
-            await bot.send_message(
-                u["telegram_id"],
-                f"📢 *Admin xabari:*\n\n{message.text}",
-                parse_mode="Markdown"
-            )
+            await bot.send_message(tg_id, formatted_text, parse_mode="HTML")
             success += 1
-        except Exception:
+        except TelegramForbiddenError as e:
             fail += 1
+            removed = False
+            if should_remove_blocked_user(e):
+                removed = try_delete_blocked_user(tg_id)
+                if removed:
+                    removed_blocked += 1
+            failed_users.append(f"{tg_id} — Forbidden: {h(str(e))} | o'chirildi: {'ha' if removed else "yo'q"}")
+        except TelegramBadRequest as e:
+            fail += 1
+            removed = False
+            if should_remove_blocked_user(e):
+                removed = try_delete_blocked_user(tg_id)
+                if removed:
+                    removed_blocked += 1
+            failed_users.append(f"{tg_id} — BadRequest: {h(str(e))} | o'chirildi: {'ha' if removed else "yo'q"}")
+        except TelegramRetryAfter as e:
+            fail += 1
+            retry_after = getattr(e, "retry_after", None)
+            failed_users.append(f"{tg_id} — Flood control. Retry after: {retry_after}")
+        except TelegramAPIError as e:
+            fail += 1
+            failed_users.append(f"{tg_id} — APIError: {h(str(e))}")
+        except Exception as e:
+            fail += 1
+            removed = False
+            if should_remove_blocked_user(e):
+                removed = try_delete_blocked_user(tg_id)
+                if removed:
+                    removed_blocked += 1
+            failed_users.append(f"{tg_id} — {h(type(e).__name__)}: {h(str(e))} | o'chirildi: {'ha' if removed else "yo'q"}")
 
-    await message.answer(
-        f"📢 *Xabar yuborildi!*\n\n"
-        f"✅ Muvaffaqiyatli: *{success}* ta\n"
-        f"❌ Xato: *{fail}* ta",
-        parse_mode="Markdown"
+    result_text = (
+        f"📢 <b>Xabar yuborildi!</b>\n\n"
+        f"✅ Muvaffaqiyatli: <b>{success}</b> ta\n"
+        f"❌ Xato: <b>{fail}</b> ta\n"
+        f"🧹 Block/deactivated sabab o'chirilganlar: <b>{removed_blocked}</b> ta"
     )
+    await message.answer(result_text, parse_mode="HTML")
 
+    if failed_users:
+        detail_header = "❌ <b>Yuborilmagan foydalanuvchilar:</b>\n\n"
+        await answer_long_html(message, detail_header + "\n".join(failed_users))
 @dp.callback_query(F.data == "admin_set_admin")
 async def admin_set_admin_start(call: CallbackQuery, state: FSMContext):
     if not is_admin(call.from_user.id):
@@ -1084,7 +1176,7 @@ async def admin_set_admin_confirm(message: Message, state: FSMContext):
         target_id = int(message.text.strip())
         set_admin(target_id, True)
         await state.clear()
-        await message.answer(f"✅ ID `{target_id}` ga admin huquqi berildi!", parse_mode="Markdown")
+        await message.answer(f"✅ ID <code>{h(target_id)}</code> ga admin huquqi berildi!", parse_mode="HTML")
     except ValueError:
         await message.answer("❌ Noto'g'ri ID! Faqat raqam kiriting.")
 
@@ -1100,7 +1192,7 @@ async def cmd_setadmin(message: Message):
     try:
         target_id = int(parts[1])
         set_admin(target_id, True)
-        await message.answer(f"✅ ID `{target_id}` ga admin huquqi berildi!", parse_mode="Markdown")
+        await message.answer(f"✅ ID <code>{h(target_id)}</code> ga admin huquqi berildi!", parse_mode="HTML")
     except ValueError:
         await message.answer("❌ Noto'g'ri ID!")
 
@@ -1144,6 +1236,12 @@ async def main():
     await set_bot_commands()
     setup_scheduler(bot)
 
+    try:
+        await bot.delete_webhook(drop_pending_updates=False)
+        logger.info("Webhook tozalandi / polling rejimi yoqildi")
+    except Exception as e:
+        logger.warning("Webhookni tozalashda xatolik: %s", e)
+
     app = web.Application()
     app.router.add_get("/", health)
     runner = web.AppRunner(app)
@@ -1152,7 +1250,8 @@ async def main():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-    await dp.start_polling(bot)
+    logger.info("Bot polling orqali ishga tushmoqda. Agar TelegramConflictError chiqsa, bot boshqa joyda ham ishlayapti.")
+    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
 if __name__ == "__main__":
     asyncio.run(main())
