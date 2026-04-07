@@ -3,6 +3,7 @@ Ob-havo moduli — Open-Meteo API (bepul, API key kerak emas)
 Hujjat: https://open-meteo.com/
 """
 
+import asyncio
 import aiohttp
 import logging
 from datetime import datetime, date
@@ -109,29 +110,54 @@ async def fetch_weather(lat: float, lon: float) -> dict | None:
         "timezone": "Asia/Tashkent",
         "forecast_days": 5,
     }
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(BASE_URL, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                if resp.status == 200:
-                    return await resp.json()
-    except Exception as e:
-        logger.error(f"fetch_weather xatosi: {e}")
+    timeout = aiohttp.ClientTimeout(total=20, connect=5, sock_read=15)
+    headers = {"User-Agent": "HelpTeachBot/1.0"}
+
+    for attempt in range(1, 4):
+        try:
+            async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+                async with session.get(BASE_URL, params=params) as resp:
+                    if resp.status == 200:
+                        return await resp.json()
+
+                    body = await resp.text()
+                    logger.error(
+                        "fetch_weather HTTP xato | status=%s | attempt=%s | body=%s",
+                        resp.status, attempt, body[:500]
+                    )
+        except asyncio.TimeoutError as e:
+            logger.warning("fetch_weather timeout | attempt=%s | lat=%s | lon=%s | err=%r", attempt, lat, lon, e)
+        except aiohttp.ClientError as e:
+            logger.warning("fetch_weather client xatosi | attempt=%s | err=%r", attempt, e)
+        except Exception as e:
+            logger.exception("fetch_weather kutilmagan xato | attempt=%s | err=%r", attempt, e)
+
     return None
 
 async def geocode_city(city_name: str) -> tuple | None:
     """Shahar nomini koordinataga aylantirish"""
     params = {"name": city_name, "count": 1, "language": "uz", "format": "json"}
+    timeout = aiohttp.ClientTimeout(total=12, connect=4, sock_read=8)
+    headers = {"User-Agent": "HelpTeachBot/1.0"}
+
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(GEO_URL, params=params, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            async with session.get(GEO_URL, params=params) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     results = data.get("results", [])
                     if results:
                         r = results[0]
                         return r["latitude"], r["longitude"], r["name"]
+
+                body = await resp.text()
+                logger.error("geocode_city HTTP xato | status=%s | city=%s | body=%s", resp.status, city_name, body[:300])
+    except asyncio.TimeoutError as e:
+        logger.warning("geocode_city timeout | city=%s | err=%r", city_name, e)
+    except aiohttp.ClientError as e:
+        logger.warning("geocode_city client xatosi | city=%s | err=%r", city_name, e)
     except Exception as e:
-        logger.error(f"geocode_city xatosi: {e}")
+        logger.exception("geocode_city xatosi: %r", e)
     return None
 
 # ──────────────────────────────────────────
@@ -171,7 +197,7 @@ def format_current_weather(data: dict, city_name: str) -> str:
         f"📊 Bugun: {t_min:+.0f}°C / {t_max:+.0f}°C\n"
         f"☁️ Holat: <b>{desc}</b>\n\n"
         f"💧 Namlik: <b>{humidity}%</b>\n"
-        f"🌬 Shamol: <b>{wind_spd:.0f} km/s</b> {wind_dir}\n"
+        f"🌬 Shamol: <b>{wind_spd:.0f} km/soat</b> {wind_dir}\n"
         f"🔻 Bosim: <b>{pressure:.0f} hPa</b>\n"
         f"🌂 Yog'in ehtimoli: <b>{precip_prob}%</b>\n"
         f"☀️ UV indeks: <b>{uv_level(uv)}</b>\n"
@@ -206,7 +232,7 @@ def format_forecast_5day(data: dict, city_name: str) -> str:
         msg += (
             f"{emoji} <b>{weekday}, {date_fmt}</b>\n"
             f"   🌡 {t_min:+.0f}°C / {t_max:+.0f}°C  |  {desc}\n"
-            f"   🌂 {precip_prob}%  💧 {precip:.1f}mm  🌬 {wind:.0f}km/s\n\n"
+            f"   🌂 {precip_prob}%  💧 {precip:.1f}mm  🌬 {wind:.0f} km/soat\n\n"
         )
 
     return msg
