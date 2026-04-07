@@ -4,6 +4,7 @@ import os
 import re
 from html import escape as html_escape
 from datetime import datetime, timedelta
+from database import delete_user
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, StateFilter
@@ -1142,13 +1143,17 @@ async def admin_broadcast_send(message: Message, state: FSMContext):
             fail += 1
             failed_users.append(f"{tg_id} — APIError: {h(str(e))}")
         except Exception as e:
-            fail += 1
-            removed = False
-            if should_remove_blocked_user(e):
-                removed = try_delete_blocked_user(tg_id)
-                if removed:
-                    removed_blocked += 1
-            failed_users.append(f"{tg_id} — {h(type(e).__name__)}: {h(str(e))} | o'chirildi: {'ha' if removed else "yo'q"}")
+    fail += 1
+    err = str(e)
+
+    if "bot was blocked by the user" in err.lower():
+        delete_user(u["telegram_id"])
+        failed_users.append(f"{u['telegram_id']} — BLOCK bo'lgan, bazadan o‘chirildi")
+    elif "user is deactivated" in err.lower():
+        delete_user(u["telegram_id"])
+        failed_users.append(f"{u['telegram_id']} — account o‘chgan, bazadan o‘chirildi")
+    else:
+        failed_users.append(f"{u['telegram_id']} — {err}")
 
     result_text = (
         f"📢 <b>Xabar yuborildi!</b>\n\n"
