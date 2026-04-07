@@ -770,7 +770,7 @@ async def list_reminders(call: CallbackQuery):
         repeat_text = {"none": "Bir marta", "daily": "Har kuni", "weekly": "Har hafta"}
         msg += f"📌 *{r['title']}*\n"
         msg += f"⏰ {time_str} | 🔂 {repeat_text.get(r['repeat_type'], r['repeat_type'])}\n\n"
-    await call.message.answer(msg, parse_mode="Markdown")
+    await call.message.answer(msg, parse_mode="HTML")
     await call.answer()
 
 # ──────────────────────────────────────────
@@ -1022,7 +1022,7 @@ async def admin_users(call: CallbackQuery):
         msg += f"   Username: {username}\n"
         msg += f"   {u.get('organization', u.get('faculty', '—'))}\n\n"
 
-    await call.message.answer(msg, parse_mode="Markdown")
+    await call.message.answer(msg, parse_mode="HTML")
     await call.answer()
 
 @dp.callback_query(F.data == "admin_broadcast")
