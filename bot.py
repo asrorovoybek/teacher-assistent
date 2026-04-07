@@ -561,7 +561,7 @@ async def all_schedule(call: CallbackQuery):
     if not has_any:
         msg = "📭 Jadval bo'sh! Dars qo'shing."
 
-    await call.message.answer(msg, parse_mode="Markdown")
+    await call.message.answer(msg)
     await call.answer()
 
 @dp.callback_query(F.data == "delete_lesson")
