@@ -1,13 +1,78 @@
-import asyncio
 import logging
 from datetime import datetime, timezone, timedelta, date
+from html import escape
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
 from database import (
-    get_pending_reminders, mark_reminder_sent,
-    supabase
+    get_pending_reminders,
+    mark_reminder_sent,
+    delete_user,
+    supabase,
 )
 
 logger = logging.getLogger(__name__)
+
+TZ = timezone(timedelta(hours=5))  # Asia/Tashkent
+
+LESSON_TYPES = {
+    "lecture": "📖 Ma'ruza",
+    "practical": "✏️ Amaliy",
+    "lab": "🔬 Laboratoriya",
+    "course": "📝 Kurs ishi",
+    "seminar": "💬 Seminar",
+    "other": "📌 Boshqa",
+}
+
+DAYS_UZ = [
+    "Dushanba", "Seshanba", "Chorshanba",
+    "Payshanba", "Juma", "Shanba", "Yakshanba"
+]
+
+
+def h(text) -> str:
+    return escape(str(text if text is not None else ""), quote=False)
+
+
+def is_odd_week_today() -> bool:
+    return date.today().isocalendar()[1] % 2 == 1
+
+
+def lesson_matches_week(lesson: dict, odd_week: bool) -> bool:
+    wt = lesson.get("week_type", "every")
+    if wt == "every":
+        return True
+    if wt == "odd":
+        return odd_week
+    if wt == "even":
+        return not odd_week
+    return True
+
+
+def is_inactive_user_error(err_text: str) -> bool:
+    t = err_text.lower()
+    return (
+        "bot was blocked by the user" in t
+        or "user is deactivated" in t
+        or "chat not found" in t
+        or "user not found" in t
+        or "forbidden: bot was blocked by the user" in t
+    )
+
+
+async def safe_send_message(bot, user_id: int, text: str, *, parse_mode: str = "HTML") -> bool:
+    try:
+        await bot.send_message(user_id, text, parse_mode=parse_mode)
+        return True
+    except Exception as e:
+        err = str(e)
+        logger.error(f"send_message xatosi uid={user_id}: {err}")
+        if is_inactive_user_error(err):
+            deleted = delete_user(user_id)
+            if deleted:
+                logger.info(f"Inactive/block bo'lgan user bazadan o'chirildi: {user_id}")
+        return False
+
 
 # ──────────────────────────────────────────
 # DARS OLDI ESLATMALARI (30 va 10 daqiqa)
@@ -15,32 +80,23 @@ logger = logging.getLogger(__name__)
 
 async def check_upcoming_lessons(bot):
     try:
-        # UTC+5 Toshkent vaqti
-        now = datetime.now(timezone(timedelta(hours=5)))
+        now = datetime.now(TZ)
         current_day = now.weekday()
         current_time = now.strftime("%H:%M")
         time_30 = (now + timedelta(minutes=30)).strftime("%H:%M")
         time_10 = (now + timedelta(minutes=10)).strftime("%H:%M")
-
-        # Hozirgi hafta toqmi yoki juftmi
-        from datetime import date
-        week_number = date.today().isocalendar()[1]
-        is_odd_week = (week_number % 2 == 1)
+        odd_week = is_odd_week_today()
 
         all_settings = supabase.table("user_settings").select("*").execute().data
         settings_map = {s["user_id"]: s for s in all_settings}
 
-        all_lessons = supabase.table("schedule").select("*").eq("day_of_week", current_day).execute().data
-
-        # Dars turi matnlari
-        LESSON_TYPES = {
-            "lecture": "📖 Ma'ruza",
-            "practical": "✏️ Amaliy",
-            "lab": "🔬 Laboratoriya",
-            "course": "📝 Kurs ishi",
-            "seminar": "💬 Seminar",
-            "other": "📌 Boshqa"
-        }
+        all_lessons = (
+            supabase.table("schedule")
+            .select("*")
+            .eq("day_of_week", current_day)
+            .execute()
+            .data
+        )
 
         for lesson in all_lessons:
             uid = lesson["user_id"]
@@ -48,78 +104,98 @@ async def check_upcoming_lessons(bot):
             if not settings or settings.get("do_not_disturb"):
                 continue
 
-            # Toq/juft hafta filtri
-            wt = lesson.get("week_type", "every")
-            if wt == "odd" and not is_odd_week:
-                continue
-            if wt == "even" and is_odd_week:
+            if not lesson_matches_week(lesson, odd_week):
                 continue
 
-            lesson_start = lesson["start_time"][:5]
+            lesson_start = str(lesson.get("start_time", ""))[:5]
             lt = LESSON_TYPES.get(lesson.get("lesson_type", "other"), "📌 Boshqa")
+            subject = h(lesson.get("subject", "—"))
+            room = h(lesson.get("room", "—"))
+            group_name = h(lesson.get("group_name", "—"))
+            start_time = h(str(lesson.get("start_time", ""))[:5])
+            end_time = h(str(lesson.get("end_time", ""))[:5])
+            lt_html = h(lt)
 
             if settings.get("notify_before_30") and lesson_start == time_30:
-                await bot.send_message(uid,
-                    f"📅 *30 daqiqadan dars boshlanadi!*\n\n"
-                    f"📚 Fan: *{lesson['subject']}*\n"
-                    f"📖 Turi: *{lt}*\n"
-                    f"🏛 Xona: *{lesson['room']}*\n"
-                    f"👥 Guruh: *{lesson['group_name']}*\n"
-                    f"⏰ Vaqt: *{lesson['start_time'][:5]} – {lesson['end_time'][:5]}*\n\n"
-                    f"Tayyorlaning! 💪",
-                    parse_mode="Markdown")
+                await safe_send_message(
+                    bot,
+                    uid,
+                    (
+                        "📅 <b>30 daqiqadan dars boshlanadi!</b>\n\n"
+                        f"📚 Fan: <b>{subject}</b>\n"
+                        f"📖 Turi: <b>{lt_html}</b>\n"
+                        f"🏛 Xona: <b>{room}</b>\n"
+                        f"👥 Guruh: <b>{group_name}</b>\n"
+                        f"⏰ Vaqt: <b>{start_time} – {end_time}</b>\n\n"
+                        "Tayyorlaning! 💪"
+                    ),
+                )
 
             if settings.get("notify_before_10") and lesson_start == time_10:
-                await bot.send_message(uid,
-                    f"⚡️ *10 daqiqa qoldi!*\n\n"
-                    f"📚 Fan: *{lesson['subject']}*\n"
-                    f"📖 Turi: *{lt}*\n"
-                    f"🏛 Xona: *{lesson['room']}*\n"
-                    f"👥 Guruh: *{lesson['group_name']}*\n\n"
-                    f"Tez yo'lga chiqing! 🏃",
-                    parse_mode="Markdown")
+                await safe_send_message(
+                    bot,
+                    uid,
+                    (
+                        "⚡️ <b>10 daqiqa qoldi!</b>\n\n"
+                        f"📚 Fan: <b>{subject}</b>\n"
+                        f"📖 Turi: <b>{lt_html}</b>\n"
+                        f"🏛 Xona: <b>{room}</b>\n"
+                        f"👥 Guruh: <b>{group_name}</b>\n\n"
+                        "Tez yo'lga chiqing! 🏃"
+                    ),
+                )
 
             if settings.get("notify_on_time") and lesson_start == current_time:
-                await bot.send_message(uid,
-                    f"🔴 *DARS BOSHLANDI!*\n\n"
-                    f"📚 *{lesson['subject']}*\n"
-                    f"📖 Turi: *{lt}*\n"
-                    f"🏛 Xona: *{lesson['room']}*\n"
-                    f"👥 Guruh: *{lesson['group_name']}*",
-                    parse_mode="Markdown")
+                await safe_send_message(
+                    bot,
+                    uid,
+                    (
+                        "🔴 <b>DARS BOSHLANDI!</b>\n\n"
+                        f"📚 <b>{subject}</b>\n"
+                        f"📖 Turi: <b>{lt_html}</b>\n"
+                        f"🏛 Xona: <b>{room}</b>\n"
+                        f"👥 Guruh: <b>{group_name}</b>"
+                    ),
+                )
 
     except Exception as e:
         logger.error(f"check_upcoming_lessons xatosi: {e}")
+
 
 # ──────────────────────────────────────────
 # ERTALABKI XABAR
 # ──────────────────────────────────────────
 
 async def send_morning_message(bot):
-    """Har kuni ertalab — BITTA so'rov bilan"""
     try:
-        now = datetime.now()
+        now = datetime.now(TZ)
         current_time = now.strftime("%H:%M")
         current_day = now.weekday()
-        days_uz = ["Dushanba", "Seshanba", "Chorshanba", "Payshanba", "Juma", "Shanba", "Yakshanba"]
-        today_name = days_uz[current_day]
+        today_name = DAYS_UZ[current_day]
+        odd_week = is_odd_week_today()
+        week_text = "Toq hafta" if odd_week else "Juft hafta"
 
-        # Barcha sozlamalar va foydalanuvchilarni BITTA so'rovda
         all_settings = supabase.table("user_settings").select("*").execute().data
         all_users = supabase.table("users").select("telegram_id, full_name").execute().data
         users_map = {u["telegram_id"]: u for u in all_users}
 
-        # Bugungi barcha darslar BITTA so'rovda
-        all_lessons = supabase.table("schedule").select("*").eq("day_of_week", current_day).order("start_time").execute().data
+        all_lessons = (
+            supabase.table("schedule")
+            .select("*")
+            .eq("day_of_week", current_day)
+            .order("start_time")
+            .execute()
+            .data
+        )
         lessons_map = {}
-        for l in all_lessons:
-            lessons_map.setdefault(l["user_id"], []).append(l)
+        for lesson in all_lessons:
+            if lesson_matches_week(lesson, odd_week):
+                lessons_map.setdefault(lesson["user_id"], []).append(lesson)
 
-        # Barcha bajarilmagan vazifalar BITTA so'rovda
         all_tasks = supabase.table("tasks").select("*").eq("is_done", False).execute().data
         tasks_map = {}
-        for t in all_tasks:
-            tasks_map.setdefault(t["user_id"], []).append(t)
+        for task in all_tasks:
+            tasks_map.setdefault(task["user_id"], []).append(task)
 
         for settings in all_settings:
             uid = settings["user_id"]
@@ -136,27 +212,33 @@ async def send_morning_message(bot):
 
             lessons = lessons_map.get(uid, [])
             tasks = tasks_map.get(uid, [])
+            full_name = h(user.get("full_name", "Foydalanuvchi"))
 
-            msg = f"🌅 *Xayrli tong, {user['full_name']}!*\n"
-            msg += f"📆 Bugun: *{today_name}, {now.strftime('%d.%m.%Y')}*\n\n"
+            msg = (
+                f"🌅 <b>Xayrli tong, {full_name}!</b>\n"
+                f"📆 Bugun: <b>{today_name}, {now.strftime('%d.%m.%Y')}</b>\n"
+                f"🗓 Hafta turi: <b>{week_text}</b>\n\n"
+            )
 
             if lessons:
-                msg += f"📚 *Bugungi darslar ({len(lessons)} ta):*\n"
-                for l in lessons:
-                    msg += f"  ⏰ {l['start_time'][:5]} — {l['subject']} ({l['room']})\n"
+                msg += f"📚 <b>Bugungi darslar ({len(lessons)} ta):</b>\n"
+                for lesson in lessons:
+                    msg += (
+                        f"• <b>{h(str(lesson['start_time'])[:5])}</b> — "
+                        f"{h(lesson['subject'])} ({h(lesson['room'])})\n"
+                    )
             else:
                 msg += "📚 Bugun dars yo'q!\n"
 
             if tasks:
-                msg += f"\n✅ *Bajarilmagan vazifalar: {len(tasks)} ta*\n"
-                for t in tasks[:3]:
-                    msg += f"  • {t['title']}\n"
+                msg += f"\n✅ <b>Bajarilmagan vazifalar: {len(tasks)} ta</b>\n"
+                for task in tasks[:3]:
+                    msg += f"• {h(task['title'])}\n"
                 if len(tasks) > 3:
-                    msg += f"  _...va yana {len(tasks)-3} ta_\n"
+                    msg += f"… va yana {len(tasks) - 3} ta\n"
 
-            msg += "\n💪 *Samarali kun tilaymiz!*"
-
-            await bot.send_message(uid, msg, parse_mode="Markdown")
+            msg += "\n💪 <b>Samarali kun tilaymiz!</b>"
+            await safe_send_message(bot, uid, msg)
 
     except Exception as e:
         logger.error(f"send_morning_message xatosi: {e}")
@@ -167,26 +249,24 @@ async def send_morning_message(bot):
 # ──────────────────────────────────────────
 
 async def send_evening_summary(bot):
-    """Har kuni kechqurun — BITTA so'rov bilan"""
     try:
-        now = datetime.now()
+        now = datetime.now(TZ)
         current_time = now.strftime("%H:%M")
 
         all_settings = supabase.table("user_settings").select("*").execute().data
         all_users = supabase.table("users").select("telegram_id, full_name").execute().data
         users_map = {u["telegram_id"]: u for u in all_users}
 
-        # Barcha vazifalarni BITTA so'rovda
         all_done = supabase.table("tasks").select("user_id").eq("is_done", True).execute().data
         all_pending = supabase.table("tasks").select("*").eq("is_done", False).execute().data
 
         done_map = {}
-        for t in all_done:
-            done_map[t["user_id"]] = done_map.get(t["user_id"], 0) + 1
+        for task in all_done:
+            done_map[task["user_id"]] = done_map.get(task["user_id"], 0) + 1
 
         pending_map = {}
-        for t in all_pending:
-            pending_map.setdefault(t["user_id"], []).append(t)
+        for task in all_pending:
+            pending_map.setdefault(task["user_id"], []).append(task)
 
         for settings in all_settings:
             uid = settings["user_id"]
@@ -203,19 +283,21 @@ async def send_evening_summary(bot):
 
             done_count = done_map.get(uid, 0)
             pending_tasks = pending_map.get(uid, [])
+            full_name = h(user.get("full_name", "Foydalanuvchi"))
 
-            msg = f"🌙 *Kechqurun xulosa, {user['full_name']}!*\n\n"
-            msg += f"✅ Bajarilgan vazifalar: *{done_count} ta*\n"
-            msg += f"⏳ Kutayotgan vazifalar: *{len(pending_tasks)} ta*\n\n"
+            msg = (
+                f"🌙 <b>Kechqurun xulosa, {full_name}!</b>\n\n"
+                f"✅ Bajarilgan vazifalar: <b>{done_count} ta</b>\n"
+                f"⏳ Kutayotgan vazifalar: <b>{len(pending_tasks)} ta</b>\n\n"
+            )
 
             if pending_tasks:
-                msg += "📋 *Ertaga bajarilishi kerak:*\n"
-                for t in pending_tasks[:3]:
-                    msg += f"  • {t['title']}\n"
+                msg += "📋 <b>Ertaga bajarilishi kerak:</b>\n"
+                for task in pending_tasks[:3]:
+                    msg += f"• {h(task['title'])}\n"
 
-            msg += "\n😴 *Yaxshi dam oling!*"
-
-            await bot.send_message(uid, msg, parse_mode="Markdown")
+            msg += "\n😴 <b>Yaxshi dam oling!</b>"
+            await safe_send_message(bot, uid, msg)
 
     except Exception as e:
         logger.error(f"send_evening_summary xatosi: {e}")
@@ -226,13 +308,11 @@ async def send_evening_summary(bot):
 # ──────────────────────────────────────────
 
 async def check_custom_reminders(bot):
-    """Foydalanuvchi qo'shgan eslatmalarni tekshirish"""
     try:
         reminders = get_pending_reminders()
         if not reminders:
             return
 
-        # Barcha sozlamalarni BITTA so'rovda
         all_settings = supabase.table("user_settings").select("*").execute().data
         settings_map = {s["user_id"]: s for s in all_settings}
 
@@ -243,26 +323,35 @@ async def check_custom_reminders(bot):
             if settings and settings.get("do_not_disturb"):
                 continue
 
-            await bot.send_message(
+            sent = await safe_send_message(
+                bot,
                 uid,
-                f"🔔 *ESLATMA!*\n\n"
-                f"📌 {reminder['title']}\n\n"
-                f"_Bu eslatma siz tomondan o'rnatilgan edi._",
-                parse_mode="Markdown"
+                (
+                    "🔔 <b>ESLATMA!</b>\n\n"
+                    f"📌 {h(reminder['title'])}\n\n"
+                    "Bu eslatma siz tomondan o'rnatilgan edi."
+                ),
             )
+            if not sent:
+                continue
+
             mark_reminder_sent(reminder["id"])
 
             if reminder["repeat_type"] == "daily":
                 new_time = (datetime.fromisoformat(reminder["remind_at"]) + timedelta(days=1)).isoformat()
                 supabase.table("reminders").insert({
-                    "user_id": uid, "title": reminder["title"],
-                    "remind_at": new_time, "repeat_type": "daily"
+                    "user_id": uid,
+                    "title": reminder["title"],
+                    "remind_at": new_time,
+                    "repeat_type": "daily",
                 }).execute()
             elif reminder["repeat_type"] == "weekly":
                 new_time = (datetime.fromisoformat(reminder["remind_at"]) + timedelta(weeks=1)).isoformat()
                 supabase.table("reminders").insert({
-                    "user_id": uid, "title": reminder["title"],
-                    "remind_at": new_time, "repeat_type": "weekly"
+                    "user_id": uid,
+                    "title": reminder["title"],
+                    "remind_at": new_time,
+                    "repeat_type": "weekly",
                 }).execute()
 
     except Exception as e:
@@ -273,14 +362,14 @@ async def check_custom_reminders(bot):
 # SCHEDULER ISHGA TUSHIRISH
 # ──────────────────────────────────────────
 
+
 def setup_scheduler(bot):
     scheduler = AsyncIOScheduler(timezone="Asia/Tashkent")
 
-    # max_instances=1 — eski job tugamay yangi boshlanmaydi
     scheduler.add_job(check_upcoming_lessons, "interval", minutes=1, args=[bot], max_instances=1)
     scheduler.add_job(check_custom_reminders, "interval", minutes=1, args=[bot], max_instances=1)
-    scheduler.add_job(send_morning_message,   "interval", minutes=1, args=[bot], max_instances=1)
-    scheduler.add_job(send_evening_summary,   "interval", minutes=1, args=[bot], max_instances=1)
+    scheduler.add_job(send_morning_message, "interval", minutes=1, args=[bot], max_instances=1)
+    scheduler.add_job(send_evening_summary, "interval", minutes=1, args=[bot], max_instances=1)
 
     scheduler.start()
     logger.info("✅ Scheduler ishga tushdi!")
