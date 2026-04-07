@@ -1,6 +1,5 @@
 """
 Ob-havo moduli — Open-Meteo API (bepul, API key kerak emas)
-Hujjat: https://open-meteo.com/
 """
 
 import aiohttp
@@ -32,7 +31,7 @@ UZ_CITIES = {
 }
 
 # ──────────────────────────────────────────
-# OB-HAVO KODLARI → EMOJI + MATN
+# OB-HAVO KODLARI
 # ──────────────────────────────────────────
 
 WMO_CODES = {
@@ -84,7 +83,7 @@ def uv_level(uv: float) -> str:
     return "Ekstremal 🟣"
 
 # ──────────────────────────────────────────
-# API SO'ROVLARI
+# API
 # ──────────────────────────────────────────
 
 BASE_URL = "https://api.open-meteo.com/v1/forecast"
@@ -95,7 +94,7 @@ async def fetch_weather(lat: float, lon: float) -> dict | None:
         "latitude": lat,
         "longitude": lon,
         "current": [
-            "time",
+            # DIQQAT: bu yerga "time" qo'shilmaydi
             "temperature_2m",
             "apparent_temperature",
             "relative_humidity_2m",
@@ -109,7 +108,6 @@ async def fetch_weather(lat: float, lon: float) -> dict | None:
             "is_day"
         ],
         "daily": [
-            "time",
             "weather_code",
             "temperature_2m_max",
             "temperature_2m_min",
@@ -121,7 +119,6 @@ async def fetch_weather(lat: float, lon: float) -> dict | None:
             "sunset",
         ],
         "hourly": [
-            "time",
             "temperature_2m",
             "precipitation_probability",
             "weather_code",
@@ -146,7 +143,6 @@ async def fetch_weather(lat: float, lon: float) -> dict | None:
         return None
 
 async def geocode_city(city_name: str) -> tuple | None:
-    """Shahar nomini koordinataga aylantirish"""
     params = {
         "name": city_name,
         "count": 1,
@@ -174,7 +170,7 @@ async def geocode_city(city_name: str) -> tuple | None:
         return None
 
 # ──────────────────────────────────────────
-# XABAR FORMATLASH
+# FORMATLASH
 # ──────────────────────────────────────────
 
 def format_current_weather(data: dict, city_name: str) -> str:
@@ -199,15 +195,13 @@ def format_current_weather(data: dict, city_name: str) -> str:
     sunrise = str(d["sunrise"][0])[11:16]
     sunset = str(d["sunset"][0])[11:16]
 
-    # MUHIM TUZATISH:
-    # vaqt endi servernikidan emas, API qaytargan joriy vaqtdan olinadi
-    current_api_time = c.get("time")  # masalan: 2026-04-07T19:27
+    current_api_time = c.get("time")
     if current_api_time:
         try:
             dt = datetime.fromisoformat(current_api_time)
             time_str = dt.strftime("%d.%m.%Y %H:%M")
         except Exception:
-            time_str = current_api_time.replace("T", " ")
+            time_str = str(current_api_time).replace("T", " ")
     else:
         time_str = datetime.now().strftime("%d.%m.%Y %H:%M")
 
@@ -257,15 +251,23 @@ def format_forecast_5day(data: dict, city_name: str) -> str:
     return msg
 
 def format_hourly_today(data: dict, city_name: str) -> str:
-    """Bugungi soatlik prognoz (faqat qolgan soatlar)"""
     h = data["hourly"]
-    now_hour = datetime.now().hour
+
+    current_api_time = data.get("current", {}).get("time")
+    if current_api_time:
+        now_dt = datetime.fromisoformat(current_api_time)
+        today_str = now_dt.date().isoformat()
+        now_hour = now_dt.hour
+    else:
+        now_dt = datetime.now()
+        today_str = date.today().isoformat()
+        now_hour = now_dt.hour
 
     msg = f"⏱ <b>{city_name} — Bugungi soatlik prognoz</b>\n\n"
     count = 0
 
     for i, time_str in enumerate(h["time"]):
-        if not time_str.startswith(str(date.today())):
+        if not time_str.startswith(today_str):
             continue
 
         hour = int(time_str[11:13])
