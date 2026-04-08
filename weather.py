@@ -15,16 +15,12 @@ Environment:
 import os
 import aiohttp
 import logging
-from datetime import datetime, date
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
 API_KEY = os.getenv("WEATHER_API_KEY")
 BASE_URL = "https://api.weatherapi.com/v1"
-
-# ──────────────────────────────────────────
-# O'ZBEKISTON SHAHARLARI
-# ──────────────────────────────────────────
 
 UZ_CITIES = {
     "Toshkent":      (41.2995, 69.2401),
@@ -44,9 +40,7 @@ UZ_CITIES = {
     "Denov":         (38.2700, 67.8900),
 }
 
-# ──────────────────────────────────────────
-# TARJIMA VA YORDAMCHI LUG'ATLAR
-# ──────────────────────────────────────────
+DAYS_UZ = ["Dushanba", "Seshanba", "Chorshanba", "Payshanba", "Juma", "Shanba", "Yakshanba"]
 
 CONDITION_MAP = {
     "sunny": "Quyoshli",
@@ -58,12 +52,7 @@ CONDITION_MAP = {
     "fog": "Tuman",
     "freezing fog": "Muzlagan tuman",
     "patchy rain possible": "Yomg'ir ehtimoli bor",
-    "patchy snow possible": "Qor ehtimoli bor",
-    "patchy sleet possible": "Qor-yomg'ir ehtimoli bor",
-    "patchy freezing drizzle possible": "Muzli shivit ehtimoli bor",
-    "thundery outbreaks possible": "Momaqaldiroq ehtimoli bor",
-    "blowing snow": "Qor bo'roni",
-    "blizzard": "Bo'ron",
+    "patchy rain nearby": "Atrofda yomg'ir ehtimoli bor",
     "patchy light drizzle": "Yengil shivit",
     "light drizzle": "Yengil shivit",
     "freezing drizzle": "Muzli shivit",
@@ -76,45 +65,55 @@ CONDITION_MAP = {
     "heavy rain": "Kuchli yomg'ir",
     "light freezing rain": "Yengil muzli yomg'ir",
     "moderate or heavy freezing rain": "Kuchli muzli yomg'ir",
-    "light sleet": "Yengil qor-yomg'ir",
-    "moderate or heavy sleet": "Kuchli qor-yomg'ir",
+    "light rain shower": "Yengil jala",
+    "moderate rain shower": "O'rtacha jala",
+    "moderate or heavy rain shower": "Kuchli jala",
+    "torrential rain shower": "Juda kuchli jala",
+    "thundery outbreaks possible": "Momaqaldiroq ehtimoli bor",
+    "patchy light rain with thunder": "Yomg'ir va momaqaldiroq",
+    "moderate or heavy rain with thunder": "Kuchli yomg'ir va momaqaldiroq",
+    "patchy snow possible": "Qor ehtimoli bor",
     "patchy light snow": "Yengil qor",
     "light snow": "Yengil qor",
     "patchy moderate snow": "O'rtacha qor",
     "moderate snow": "O'rtacha qor",
     "patchy heavy snow": "Kuchli qor",
     "heavy snow": "Kuchli qor",
-    "ice pellets": "Muz donalari",
-    "light rain shower": "Yengil jala",
-    "moderate or heavy rain shower": "Kuchli jala",
-    "torrential rain shower": "Juda kuchli jala",
-    "light sleet showers": "Yengil qor-yomg'ir jala",
-    "moderate or heavy sleet showers": "Kuchli qor-yomg'ir jala",
+    "blowing snow": "Qor bo'roni",
+    "blizzard": "Kuchli qor bo'roni",
+    "patchy sleet possible": "Qor-yomg'ir ehtimoli bor",
+    "light sleet": "Yengil qor-yomg'ir",
+    "moderate or heavy sleet": "Kuchli qor-yomg'ir",
     "light snow showers": "Yengil qor yog'ishi",
     "moderate or heavy snow showers": "Kuchli qor yog'ishi",
-    "light showers of ice pellets": "Yengil muz donalari yog'ishi",
-    "moderate or heavy showers of ice pellets": "Kuchli muz donalari yog'ishi",
-    "patchy light rain with thunder": "Yengil yomg'ir va momaqaldiroq",
-    "moderate or heavy rain with thunder": "Kuchli yomg'ir va momaqaldiroq",
-    "patchy light snow with thunder": "Yengil qor va momaqaldiroq",
+    "ice pellets": "Muz donalari",
+    "light showers of ice pellets": "Yengil muz donalari",
+    "moderate or heavy showers of ice pellets": "Kuchli muz donalari",
+    "patchy light snow with thunder": "Qor va momaqaldiroq",
     "moderate or heavy snow with thunder": "Kuchli qor va momaqaldiroq",
 }
 
-DAYS_UZ = ["Dushanba", "Seshanba", "Chorshanba", "Payshanba", "Juma", "Shanba", "Yakshanba"]
+def safe_num(value, default=0):
+    try:
+        return float(value)
+    except Exception:
+        return default
 
-# AQI ko'rsatkichlari (US EPA ga yaqin tushuntirish)
-def aqi_level(pm25: float | None) -> str:
-    if pm25 is None:
-        return "—"
-    if pm25 <= 12:
-        return "Yaxshi 🟢"
-    if pm25 <= 35.4:
-        return "O'rtacha 🟡"
-    if pm25 <= 55.4:
-        return "Sezgirlar uchun zararli 🟠"
-    if pm25 <= 150.4:
-        return "Zararli 🔴"
-    return "Juda zararli 🟣"
+def format_local_datetime(localtime_str: str) -> str:
+    try:
+        dt = datetime.strptime(localtime_str, "%Y-%m-%d %H:%M")
+        return dt.strftime("%d.%m.%Y %H:%M")
+    except Exception:
+        return localtime_str or "—"
+
+def detect_season(month: int) -> str:
+    if month in (12, 1, 2):
+        return "qish"
+    if month in (3, 4, 5):
+        return "bahor"
+    if month in (6, 7, 8):
+        return "yoz"
+    return "kuz"
 
 def uv_level(uv: float) -> str:
     if uv < 3:
@@ -126,6 +125,19 @@ def uv_level(uv: float) -> str:
     if uv < 11:
         return "Juda yuqori 🔴"
     return "Ekstremal 🟣"
+
+def aqi_level(pm25):
+    if pm25 is None:
+        return "—"
+    if pm25 <= 12:
+        return "Yaxshi 🟢"
+    if pm25 <= 35.4:
+        return "O'rtacha 🟡"
+    if pm25 <= 55.4:
+        return "Sezgirlar uchun zararli 🟠"
+    if pm25 <= 150.4:
+        return "Zararli 🔴"
+    return "Juda zararli 🟣"
 
 def wind_direction(deg: float) -> str:
     dirs = ["⬆️ Sh", "↗️ Sh-Sh.S", "➡️ Sh.S", "↘️ J-Sh.S",
@@ -155,39 +167,83 @@ def condition_emoji(condition_text: str) -> str:
 def translate_condition(condition_text: str) -> str:
     if not condition_text:
         return "Noma'lum"
+
     lower = condition_text.strip().lower()
-    return CONDITION_MAP.get(lower, condition_text)
+    if lower in CONDITION_MAP:
+        return CONDITION_MAP[lower]
 
-def detect_season(month: int) -> str:
-    if month in (12, 1, 2):
-        return "qish"
-    if month in (3, 4, 5):
-        return "bahor"
-    if month in (6, 7, 8):
-        return "yoz"
-    return "kuz"
+    if "freezing fog" in lower:
+        return "Muzlagan tuman"
+    if "fog" in lower or "mist" in lower:
+        return "Tuman"
+    if "thunder" in lower:
+        return "Momaqaldiroq"
+    if "snow" in lower:
+        return "Qor"
+    if "sleet" in lower:
+        return "Qor-yomg'ir"
+    if "ice" in lower:
+        return "Muzli yog'in"
+    if "drizzle" in lower:
+        return "Shivit"
+    if "shower" in lower:
+        return "Jala"
+    if "rain" in lower:
+        return "Yomg'ir"
+    if "overcast" in lower:
+        return "Qalin bulutli"
+    if "cloud" in lower:
+        return "Bulutli"
+    if "sun" in lower or "clear" in lower:
+        return "Quyoshli"
 
-def safe_num(value, default=0):
-    try:
-        return float(value)
-    except Exception:
-        return default
+    return condition_text
 
-def format_local_datetime(localtime_str: str) -> str:
-    try:
-        dt = datetime.strptime(localtime_str, "%Y-%m-%d %H:%M")
-        return dt.strftime("%d.%m.%Y %H:%M")
-    except Exception:
-        return localtime_str
+def translate_severity(text: str) -> str:
+    t = (text or "").lower()
+    if "minor" in t:
+        return "Past"
+    if "moderate" in t:
+        return "O'rtacha"
+    if "severe" in t:
+        return "Kuchli"
+    if "extreme" in t:
+        return "Juda kuchli"
+    return text or "—"
 
-# ──────────────────────────────────────────
-# AQILLI TAVSIYA VA XULOSA
-# ──────────────────────────────────────────
+def translate_alert(text: str) -> str:
+    t = (text or "").lower()
+    if "лавин" in t or "avalanche" in t:
+        return "Qor ko‘chishi xavfi"
+    if "storm" in t or "буря" in t:
+        return "Bo‘ron xavfi"
+    if "heavy rain" in t or "сильный дожд" in t:
+        return "Kuchli yomg‘ir ogohlantirishi"
+    if "rain" in t or "дожд" in t:
+        return "Yomg‘ir ogohlantirishi"
+    if "snow" in t or "снег" in t:
+        return "Qor ogohlantirishi"
+    if "wind" in t or "ветер" in t:
+        return "Kuchli shamol ogohlantirishi"
+    if "fog" in t or "туман" in t:
+        return "Tuman ogohlantirishi"
+    if "heat" in t or "жара" in t:
+        return "Issiq havo ogohlantirishi"
+    if "cold" in t or "мороз" in t:
+        return "Sovuq havo ogohlantirishi"
+    if "thunder" in t or "гроза" in t:
+        return "Momaqaldiroq ogohlantirishi"
+    if "flood" in t or "наводнен" in t:
+        return "Suv toshqini ogohlantirishi"
+    if "dust" in t or "пыль" in t:
+        return "Chang-to‘zon ogohlantirishi"
+    if "ice" in t or "гололед" in t:
+        return "Muzlama ogohlantirishi"
+    return text or "Ob-havo ogohlantirishi"
 
-def build_lifestyle_advice(current: dict, forecast_day: dict, location: dict) -> list[str]:
+def build_lifestyle_advice(current: dict, forecast_day: dict, location: dict):
     advice = []
 
-    temp = safe_num(current.get("temp_c"))
     feels = safe_num(current.get("feelslike_c"))
     wind = safe_num(current.get("wind_kph"))
     gust = safe_num(current.get("gust_kph"))
@@ -199,15 +255,14 @@ def build_lifestyle_advice(current: dict, forecast_day: dict, location: dict) ->
     min_temp = safe_num(forecast_day.get("mintemp_c"))
     vis_km = safe_num(current.get("vis_km"))
     condition_text = (current.get("condition", {}) or {}).get("text", "").lower()
-    pm25 = None
 
+    pm25 = None
     air_quality = current.get("air_quality") or {}
     for k in ("pm2_5", "pm2_5_us", "pm2.5"):
-        if k in air_quality and air_quality[k] is not None:
-            pm25 = safe_num(air_quality[k], None)
+        if air_quality.get(k) is not None:
+            pm25 = safe_num(air_quality.get(k), None)
             break
 
-    # Yog'ingarchilik va qor
     if rain_chance >= 60:
         advice.append("🌧 Soyabon oling — yog‘ingarchilik ehtimoli yuqori.")
     elif rain_chance >= 30:
@@ -219,7 +274,6 @@ def build_lifestyle_advice(current: dict, forecast_day: dict, location: dict) ->
     if "thunder" in condition_text:
         advice.append("⛈ Momaqaldiroq bor — ochiq joyda uzoq turmang.")
 
-    # Harorat
     if feels <= -5:
         advice.append("🥶 Juda sovuq — qalin kiyim, bosh kiyim va qo‘lqop tavsiya etiladi.")
     elif feels <= 5:
@@ -229,25 +283,21 @@ def build_lifestyle_advice(current: dict, forecast_day: dict, location: dict) ->
     elif feels >= 28:
         advice.append("😎 Issiq — yengil kiyim va suv olib yuring.")
 
-    # Shamol
     if gust >= 50 or wind >= 40:
         advice.append("🌬 Shamol kuchli — tashqarida ehtiyot bo‘ling.")
     elif wind >= 25:
         advice.append("💨 Shamol sezilarli — yengil buyumlarni ehtiyot qiling.")
 
-    # UV
     if uv >= 8:
         advice.append("☀️ UV juda yuqori — bosh kiyim va quyoshdan himoya vositasi tavsiya etiladi.")
     elif uv >= 6:
         advice.append("🧴 UV yuqori — uzoq vaqt tik quyoshda qolmang.")
 
-    # Namlik va tuman
     if humidity >= 90 and vis_km <= 5:
         advice.append("🌫 Namlik va tuman yuqori — yo‘lda ko‘rish pasayishi mumkin.")
     elif vis_km <= 2:
         advice.append("🚗 Ko‘rish masofasi past — transportda ehtiyot bo‘ling.")
 
-    # Havo sifati
     if pm25 is not None:
         level = aqi_level(pm25)
         if "zararli" in level.lower():
@@ -255,9 +305,7 @@ def build_lifestyle_advice(current: dict, forecast_day: dict, location: dict) ->
         elif "o'rtacha" in level.lower():
             advice.append("🌤 Havo sifati o‘rtacha — sezgirlar ehtiyot bo‘lsin.")
 
-    # Faslga mos tavsiya
     localtime = location.get("localtime", "")
-    month = None
     try:
         month = datetime.strptime(localtime, "%Y-%m-%d %H:%M").month
     except Exception:
@@ -275,7 +323,7 @@ def build_lifestyle_advice(current: dict, forecast_day: dict, location: dict) ->
 
     return advice[:5]
 
-def build_tomorrow_brief(data: dict) -> str | None:
+def build_tomorrow_brief(data: dict):
     forecast_days = data.get("forecast", {}).get("forecastday", [])
     if len(forecast_days) < 2:
         return None
@@ -316,33 +364,30 @@ def build_tomorrow_brief(data: dict) -> str | None:
         f"{emoji} {day_name}, {date_fmt}: {min_temp:+.0f}°C / {max_temp:+.0f}°C, {cond_uz}{extra_text}"
     )
 
-def build_alerts_text(data: dict) -> str | None:
+def build_alerts_text(data: dict):
     alerts = data.get("alerts", {}).get("alert", []) or []
     if not alerts:
         return None
 
     lines = ["⚠️ <b>Ogohlantirishlar</b>"]
     for alert in alerts[:2]:
-        headline = alert.get("headline") or alert.get("event") or "Ob-havo ogohlantirishi"
-        severity = alert.get("severity", "")
-        lines.append(f"• {headline}{' (' + severity + ')' if severity else ''}")
+        headline_raw = alert.get("headline") or alert.get("event") or "Ob-havo ogohlantirishi"
+        severity_raw = alert.get("severity", "")
+        headline = translate_alert(headline_raw)
+        severity = translate_severity(severity_raw)
+        if severity and severity != "—":
+            lines.append(f"• {headline} ({severity})")
+        else:
+            lines.append(f"• {headline}")
     return "\n".join(lines)
 
-# ──────────────────────────────────────────
-# API SO'ROVLARI
-# ──────────────────────────────────────────
-
-async def geocode_city(city_name: str) -> tuple | None:
-    """
-    WeatherAPI search endpoint orqali shahar nomini topadi.
-    Natija: (lat, lon, found_name)
-    """
+async def geocode_city(city_name: str):
     if not API_KEY:
         logger.error("WEATHER_API_KEY topilmadi")
         return None
 
     url = f"{BASE_URL}/search.json"
-    params = {"key": API_KEY, "q": city_name}
+    params = {"key": API_KEY, "q": city_name, "lang": "en"}
 
     try:
         timeout = aiohttp.ClientTimeout(total=12)
@@ -363,10 +408,7 @@ async def geocode_city(city_name: str) -> tuple | None:
         logger.exception(f"geocode_city xatosi: {e}")
         return None
 
-async def fetch_weather(lat: float, lon: float) -> dict | None:
-    """
-    Botdagi eski chaqiruv bilan mos: fetch_weather(lat, lon)
-    """
+async def fetch_weather(lat: float, lon: float):
     if not API_KEY:
         logger.error("WEATHER_API_KEY topilmadi")
         return None
@@ -393,10 +435,6 @@ async def fetch_weather(lat: float, lon: float) -> dict | None:
     except Exception as e:
         logger.exception(f"fetch_weather xatosi: {e}")
         return None
-
-# ──────────────────────────────────────────
-# FORMATLASH
-# ──────────────────────────────────────────
 
 def format_current_weather(data: dict, city_name: str) -> str:
     location = data.get("location", {})
@@ -524,8 +562,6 @@ def format_hourly_today(data: dict, city_name: str) -> str:
     real_city_name = location.get("name") or city_name
     localtime = location.get("localtime", "")
 
-    now_hour = None
-    today_str = None
     try:
         now_dt = datetime.strptime(localtime, "%Y-%m-%d %H:%M")
         now_hour = now_dt.hour
