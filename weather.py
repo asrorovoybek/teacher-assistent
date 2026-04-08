@@ -1,5 +1,5 @@
 """
-Pro ob-havo moduli — WeatherAPI asosida
+Pro ob-havo moduli — WeatherAPI asosida, smart cache bilan
 Moslik:
 - UZ_CITIES
 - fetch_weather(lat, lon)
@@ -10,17 +10,51 @@ Moslik:
 
 Environment:
 - WEATHER_API_KEY=...
+
+Qo'shimcha:
+- smart cache
+- bir xil so'rovni qayta yubormaslik
+- server yukini kamaytirish
 """
 
 import os
 import aiohttp
+import asyncio
 import logging
 from datetime import datetime
+from time import time
 
 logger = logging.getLogger(__name__)
 
 API_KEY = os.getenv("WEATHER_API_KEY")
 BASE_URL = "https://api.weatherapi.com/v1"
+
+# ──────────────────────────────────────────
+# CACHE SOZLAMALARI
+# ──────────────────────────────────────────
+
+# Hozirgi ob-havo va forecast uchun cache muddati
+WEATHER_CACHE_TTL = 600   # 10 daqiqa
+
+# Geocoding uchun cache muddati
+GEOCODE_CACHE_TTL = 86400  # 24 soat
+
+# Maksimal cache hajmi
+MAX_WEATHER_CACHE = 300
+MAX_GEOCODE_CACHE = 300
+
+_weather_cache: dict = {}
+_geocode_cache: dict = {}
+
+# Bir xil paytdagi takroriy so'rovlarni bitta requestga birlashtirish
+_inflight_weather: dict = {}
+_inflight_geocode: dict = {}
+
+_cache_lock = asyncio.Lock()
+
+# ──────────────────────────────────────────
+# O'ZBEKISTON SHAHARLARI
+# ──────────────────────────────────────────
 
 UZ_CITIES = {
     "Toshkent":      (41.2995, 69.2401),
@@ -92,6 +126,36 @@ CONDITION_MAP = {
     "patchy light snow with thunder": "Qor va momaqaldiroq",
     "moderate or heavy snow with thunder": "Kuchli qor va momaqaldiroq",
 }
+
+# ──────────────────────────────────────────
+# CACHE YORDAMCHI FUNKSIYALAR
+# ──────────────────────────────────────────
+
+def _make_weather_key(lat: float, lon: float) -> str:
+    # Koordinatalarni biroz yumaloqlab, juda yaqin joylarni bitta keyga tushiramiz
+    return f"{round(float(lat), 4)},{round(float(lon), 4)}"
+
+def _make_geocode_key(city_name: str) -> str:
+    return " ".join((city_name or "").strip().lower().split())
+
+def _cache_get(cache: dict, key: str, ttl: int):
+    item = cache.get(key)
+    if not item:
+        return None
+    if time() - item["ts"] > ttl:
+        cache.pop(key, None)
+        return None
+    return item["data"]
+
+def _cache_set(cache: dict, key: str, data, max_size: int):
+    if len(cache) >= max_size:
+        oldest_key = min(cache.keys(), key=lambda k: cache[k]["ts"])
+        cache.pop(oldest_key, None)
+    cache[key] = {"data": data, "ts": time()}
+
+# ──────────────────────────────────────────
+# YORDAMCHI FUNKSIYALAR
+# ──────────────────────────────────────────
 
 def safe_num(value, default=0):
     try:
@@ -241,6 +305,10 @@ def translate_alert(text: str) -> str:
         return "Muzlama ogohlantirishi"
     return text or "Ob-havo ogohlantirishi"
 
+# ──────────────────────────────────────────
+# AQILLI TAVSIYA
+# ──────────────────────────────────────────
+
 def build_lifestyle_advice(current: dict, forecast_day: dict, location: dict):
     advice = []
 
@@ -381,10 +449,33 @@ def build_alerts_text(data: dict):
             lines.append(f"• {headline}")
     return "\n".join(lines)
 
+# ──────────────────────────────────────────
+# API SO'ROVLARI — SMART CACHE BILAN
+# ──────────────────────────────────────────
+
 async def geocode_city(city_name: str):
     if not API_KEY:
         logger.error("WEATHER_API_KEY topilmadi")
         return None
+
+    cache_key = _make_geocode_key(city_name)
+    cached = _cache_get(_geocode_cache, cache_key, GEOCODE_CACHE_TTL)
+    if cached is not None:
+        logger.info(f"geocode_city cache hit: {cache_key}")
+        return cached
+
+    async with _cache_lock:
+        if cache_key in _inflight_geocode:
+            future = _inflight_geocode[cache_key]
+            created_here = False
+        else:
+            future = asyncio.get_running_loop().create_future()
+            _inflight_geocode[cache_key] = future
+            created_here = True
+
+    if not created_here:
+        logger.info(f"geocode_city in-flight wait: {cache_key}")
+        return await future
 
     url = f"{BASE_URL}/search.json"
     params = {"key": API_KEY, "q": city_name, "lang": "en"}
@@ -396,22 +487,52 @@ async def geocode_city(city_name: str):
                 text = await resp.text()
                 if resp.status != 200:
                     logger.error(f"geocode_city HTTP {resp.status}: {text}")
-                    return None
+                    result = None
+                else:
+                    data = await resp.json()
+                    if not data:
+                        result = None
+                    else:
+                        item = data[0]
+                        result = (item["lat"], item["lon"], item["name"])
 
-                data = await resp.json()
-                if not data:
-                    return None
+        if result is not None:
+            _cache_set(_geocode_cache, cache_key, result, MAX_GEOCODE_CACHE)
 
-                item = data[0]
-                return item["lat"], item["lon"], item["name"]
+        future.set_result(result)
+        return result
+
     except Exception as e:
         logger.exception(f"geocode_city xatosi: {e}")
+        future.set_result(None)
         return None
+    finally:
+        async with _cache_lock:
+            _inflight_geocode.pop(cache_key, None)
 
 async def fetch_weather(lat: float, lon: float):
     if not API_KEY:
         logger.error("WEATHER_API_KEY topilmadi")
         return None
+
+    cache_key = _make_weather_key(lat, lon)
+    cached = _cache_get(_weather_cache, cache_key, WEATHER_CACHE_TTL)
+    if cached is not None:
+        logger.info(f"fetch_weather cache hit: {cache_key}")
+        return cached
+
+    async with _cache_lock:
+        if cache_key in _inflight_weather:
+            future = _inflight_weather[cache_key]
+            created_here = False
+        else:
+            future = asyncio.get_running_loop().create_future()
+            _inflight_weather[cache_key] = future
+            created_here = True
+
+    if not created_here:
+        logger.info(f"fetch_weather in-flight wait: {cache_key}")
+        return await future
 
     url = f"{BASE_URL}/forecast.json"
     params = {
@@ -430,11 +551,27 @@ async def fetch_weather(lat: float, lon: float):
                 text = await resp.text()
                 if resp.status != 200:
                     logger.error(f"fetch_weather HTTP {resp.status}: {text}")
-                    return None
-                return await resp.json()
+                    result = None
+                else:
+                    result = await resp.json()
+
+        if result is not None:
+            _cache_set(_weather_cache, cache_key, result, MAX_WEATHER_CACHE)
+
+        future.set_result(result)
+        return result
+
     except Exception as e:
         logger.exception(f"fetch_weather xatosi: {e}")
+        future.set_result(None)
         return None
+    finally:
+        async with _cache_lock:
+            _inflight_weather.pop(cache_key, None)
+
+# ──────────────────────────────────────────
+# FORMATLASH
+# ──────────────────────────────────────────
 
 def format_current_weather(data: dict, city_name: str) -> str:
     location = data.get("location", {})
