@@ -441,6 +441,17 @@ async def cmd_help(message: Message):
         "• 🔴 Dars boshlanganida xabar\n"
         "• 🌙 Kechki xulosa — bajarilgan/qolgan vazifalar\n\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
+        "🌤 *OB-HAVO*\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "Bot sizga shaharlar bo'yicha ob-havo ma'lumotlarini ko'rsatadi.\n\n"
+        "• 🌡 Hozirgi ob-havo\n"
+        "• 📅 5 kunlik prognoz\n"
+        "• ⏱ Bugungi soatlik prognoz\n"
+        "• 💡 Aqlli tavsiyalar (soyabon, shamol, sovuq, issiq va boshqalar)\n"
+        "• 😷 Havo sifati ma'lumoti\n"
+        "• ⚠️ Ob-havo ogohlantirishlari (mavjud bo'lsa)\n\n"
+        "📌 Shaharni tugmalardan tanlashingiz yoki o'zingiz yozib kiritishingiz mumkin.\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
         "<b>⚙️ SOZLAMALAR</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
         "• Ertalabki xabar vaqtini o'zgartirish\n"
@@ -454,6 +465,7 @@ async def cmd_help(message: Message):
         "/profile — Profilingizni ko'rish\n"
         "/today — Bugungi darslar\n"
         "/tasks — Vazifalar ro'yxati\n"
+        "/weather — Ob-havo bo'limini ochish\n"
     )
     if admin:
         text += (
@@ -869,13 +881,14 @@ async def list_reminders(call: CallbackQuery):
 # OB-HAVO
 # ──────────────────────────────────────────
 
+@dp.message(Command("weather"))
 @dp.message(F.text == "🌤 Ob-havo")
 async def weather_main(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(
         "🌤 <b>Ob-havo</b>\n\nQaysi shahar uchun ob-havo ko'rmoqchisiz?",
         reply_markup=weather_cities_keyboard(),
-        parse_mode=ParseMode.HTML,
+        parse_mode="HTML"
     )
 
 
@@ -1244,6 +1257,7 @@ async def set_bot_commands():
         BotCommand(command="today", description="Bugungi darslar"),
         BotCommand(command="tasks", description="Vazifalar ro'yxati"),
         BotCommand(command="profile", description="Profilim"),
+        BotCommand(command="weather", description="Ob-havo ma'lumoti"),
     ]
     await bot.set_my_commands(user_commands)
 
